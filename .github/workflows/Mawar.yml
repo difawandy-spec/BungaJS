@@ -1,0 +1,66 @@
+name: Stream URL Video to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Direct URL to mp4 or mkv video"
+        required: true
+
+      subtitle_track:
+        description: "Subtitle track index (for MKV only, example: 0 or 1)"
+        required: false
+        default: ""
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg
+
+      - name: Start Streaming
+        env:
+          RTMP_URL: ${{ secrets.RTMP_URL }}
+        run: |
+
+          VIDEO="${{ github.event.inputs.video_url }}"
+          SUB="${{ github.event.inputs.subtitle_track }}"
+
+          echo "Video URL: $VIDEO"
+
+          if [ -z "$SUB" ]; then
+            echo "No subtitle selected"
+
+            ffmpeg -re -i "$VIDEO" \
+            -c:v libx264 \
+            -preset veryfast \
+            -b:v 3000k \
+            -maxrate 3000k \
+            -bufsize 6000k \
+            -pix_fmt yuv420p \
+            -c:a aac \
+            -b:a 128k \
+            -ar 44100 \
+            -f flv "$RTMP_URL"
+
+          else
+            echo "Using subtitle track: $SUB"
+
+            ffmpeg -re -i "$VIDEO" \
+            -vf "subtitles='$VIDEO':si=$SUB" \
+            -c:v libx264 \
+            -preset veryfast \
+            -b:v 3000k \
+            -maxrate 3000k \
+            -bufsize 6000k \
+            -pix_fmt yuv420p \
+            -c:a aac \
+            -b:a 128k \
+            -ar 44100 \
+            -f flv "$RTMP_URL"
+
+          fi
