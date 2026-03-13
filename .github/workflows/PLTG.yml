@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       playlist:
-        description: "Masukkan URL video dipisahkan spasi"
+        description: "Masukkan URL video (pisahkan dengan spasi)"
         required: true
 
 jobs:
   stream:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Install FFmpeg
@@ -17,32 +18,39 @@ jobs:
           sudo apt update
           sudo apt install -y ffmpeg
 
-      - name: Generate Playlist
-        run: |
-          echo "${{ github.event.inputs.playlist }}" | tr ' ' '\n' > raw_playlist.txt
-
-          while read line; do
-            echo "file '$line'" >> playlist.txt
-          done < raw_playlist.txt
-
-          echo "Playlist:"
-          cat playlist.txt
-
-      - name: Start Streaming
+      - name: Start Playlist Streaming
         env:
           RTMP_URL: ${{ secrets.RTMP_URL }}
         run: |
 
-          ffmpeg -re \
-          -protocol_whitelist "file,http,https,tcp,tls" \
-          -f concat -safe 0 -i playlist.txt \
-          -c:v libx264 \
-          -preset veryfast \
-          -b:v 3000k \
-          -maxrate 3000k \
-          -bufsize 6000k \
-          -pix_fmt yuv420p \
-          -c:a aac \
-          -b:a 128k \
-          -ar 44100 \
-          -f flv "$RTMP_URL"
+          URLS="${{ github.event.inputs.playlist }}"
+
+          echo "Playlist:"
+          echo "$URLS"
+
+          for video in $URLS
+          do
+            echo "=============================="
+            echo "Now Streaming: $video"
+            echo "=============================="
+
+            ffmpeg -re \
+            -fflags +genpts \
+            -rw_timeout 15000000 \
+            -i "$video" \
+            -c:v libx264 \
+            -preset veryfast \
+            -b:v 1500k \
+            -maxrate 1500k \
+            -bufsize 3000k \
+            -g 50 \
+            -pix_fmt yuv420p \
+            -c:a aac \
+            -b:a 96k \
+            -ar 44100 \
+            -f flv "$RTMP_URL"
+
+            echo "Video selesai atau error, lanjut ke berikutnya..."
+          done
+
+          echo "Playlist selesai."
