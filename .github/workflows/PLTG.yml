@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       playlist:
-        description: "Playlist video URL (pisahkan dengan ENTER)"
+        description: "Masukkan URL video dipisahkan spasi"
         required: true
 
 jobs:
@@ -17,12 +17,15 @@ jobs:
           sudo apt update
           sudo apt install -y ffmpeg
 
-      - name: Create Playlist File
+      - name: Generate Playlist
         run: |
-          echo "${{ github.event.inputs.playlist }}" > raw_playlist.txt
-          awk '{print "file '\''"$0"'\''"}' raw_playlist.txt > playlist.txt
+          echo "${{ github.event.inputs.playlist }}" | tr ' ' '\n' > raw_playlist.txt
 
-          echo "Generated playlist:"
+          while read line; do
+            echo "file '$line'" >> playlist.txt
+          done < raw_playlist.txt
+
+          echo "Playlist:"
           cat playlist.txt
 
       - name: Start Streaming
@@ -31,6 +34,7 @@ jobs:
         run: |
 
           ffmpeg -re \
+          -protocol_whitelist "file,http,https,tcp,tls" \
           -f concat -safe 0 -i playlist.txt \
           -c:v libx264 \
           -preset veryfast \
