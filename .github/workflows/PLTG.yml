@@ -1,0 +1,44 @@
+name: Telegram Playlist Live
+
+on:
+  workflow_dispatch:
+    inputs:
+      playlist:
+        description: "Playlist video URL (pisahkan dengan ENTER)"
+        required: true
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg
+
+      - name: Create Playlist File
+        run: |
+          echo "${{ github.event.inputs.playlist }}" > raw_playlist.txt
+          awk '{print "file '\''"$0"'\''"}' raw_playlist.txt > playlist.txt
+
+          echo "Generated playlist:"
+          cat playlist.txt
+
+      - name: Start Streaming
+        env:
+          RTMP_URL: ${{ secrets.RTMP_URL }}
+        run: |
+
+          ffmpeg -re \
+          -f concat -safe 0 -i playlist.txt \
+          -c:v libx264 \
+          -preset veryfast \
+          -b:v 3000k \
+          -maxrate 3000k \
+          -bufsize 6000k \
+          -pix_fmt yuv420p \
+          -c:a aac \
+          -b:a 128k \
+          -ar 44100 \
+          -f flv "$RTMP_URL"
