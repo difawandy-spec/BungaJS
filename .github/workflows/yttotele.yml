@@ -57,10 +57,12 @@ jobs:
         run: |
           if [ -n "${{ secrets.YT_COOKIES_TXT }}" ]; then
             cat > /tmp/youtube_cookies.txt <<'EOF'
-          ${{ secrets.YT_COOKIES_TXT }}
-          EOF
+${{ secrets.YT_COOKIES_TXT }}
+EOF
+            echo "HAS_YT_COOKIES=true" >> $GITHUB_ENV
             echo "Cookies file written."
           else
+            echo "HAS_YT_COOKIES=false" >> $GITHUB_ENV
             echo "No YT_COOKIES_TXT secret found. Continuing without cookies."
           fi
 
@@ -78,7 +80,7 @@ jobs:
           SUBTITLE_TRACK: ${{ github.event.inputs.subtitle_track }}
           SUBTITLE_MODE: ${{ github.event.inputs.subtitle_mode }}
 
-          YT_COOKIES_FILE: /tmp/youtube_cookies.txt
+          HAS_YT_COOKIES: ${{ env.HAS_YT_COOKIES }}
         run: |
           cat > streamer.py <<'PY'
           import asyncio
@@ -108,7 +110,8 @@ jobs:
           SUBTITLE_TRACK = os.environ.get("SUBTITLE_TRACK", "auto").strip().lower()
           SUBTITLE_MODE = os.environ.get("SUBTITLE_MODE", "auto").strip().lower()
 
-          YT_COOKIES_FILE = os.environ.get("YT_COOKIES_FILE", "").strip()
+          HAS_YT_COOKIES = os.environ.get("HAS_YT_COOKIES", "false").lower() == "true"
+          YT_COOKIES_FILE = "/tmp/youtube_cookies.txt" if HAS_YT_COOKIES and os.path.exists("/tmp/youtube_cookies.txt") else ""
 
           TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 
@@ -288,7 +291,7 @@ jobs:
                   "--no-warnings",
                   "--no-playlist",
               ]
-              if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
+              if YT_COOKIES_FILE:
                   args.extend(["--cookies", YT_COOKIES_FILE])
               return args
 
