@@ -1,4 +1,4 @@
-name: Stream YT
+name: Stream
 
 on:
   workflow_dispatch:
