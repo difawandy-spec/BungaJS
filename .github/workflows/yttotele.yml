@@ -56,13 +56,12 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ secrets.YT_COOKIES_TXT }}" ]; then
-            cat > /tmp/youtube_cookies.txt <<'EOF'
-            ${{ secrets.YT_COOKIES_TXT }}
-            EOF
-            echo "HAS_YT_COOKIES=true" >> $GITHUB_ENV
+            printf '%s\n' "${{ secrets.YT_COOKIES_TXT }}" > /tmp/youtube_cookies.txt
+            echo "HAS_YT_COOKIES=true" >> "$GITHUB_ENV"
             echo "Cookies file written."
+            wc -l /tmp/youtube_cookies.txt || true
           else
-            echo "HAS_YT_COOKIES=false" >> $GITHUB_ENV
+            echo "HAS_YT_COOKIES=false" >> "$GITHUB_ENV"
             echo "No YT_COOKIES_TXT secret found. Continuing without cookies."
           fi
 
