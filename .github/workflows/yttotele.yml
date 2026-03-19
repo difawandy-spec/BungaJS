@@ -1,4 +1,4 @@
-name: Stream
+name: Stream YT
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         required: true
         type: choice
         options: ["true", "false"]
-        default: "true"
+        default: "false"
       subtitle_track:
         description: "Track subtitle relatif (auto / 0 / 1 / 2 ...)"
         required: true
@@ -47,7 +47,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg aria2 python3-pip
+          python3 -m pip install --upgrade pip
           python3 -m pip install --no-cache-dir telethon requests langdetect yt-dlp
+          yt-dlp --version
+          ffmpeg -version
+
+      - name: Write YouTube cookies (optional)
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.YT_COOKIES_TXT }}" ]; then
+            cat > /tmp/youtube_cookies.txt <<'EOF'
+          ${{ secrets.YT_COOKIES_TXT }}
+          EOF
+            echo "Cookies file written."
+          else
+            echo "No YT_COOKIES_TXT secret found. Continuing without cookies."
+          fi
 
       - name: Run streamer
         env:
@@ -62,6 +77,8 @@ jobs:
           USE_SUBTITLE: ${{ github.event.inputs.use_subtitle }}
           SUBTITLE_TRACK: ${{ github.event.inputs.subtitle_track }}
           SUBTITLE_MODE: ${{ github.event.inputs.subtitle_mode }}
+
+          YT_COOKIES_FILE: /tmp/youtube_cookies.txt
         run: |
           cat > streamer.py <<'PY'
           import asyncio
@@ -70,7 +87,6 @@ jobs:
           import re
           import json
           import requests
-          import shutil
           from pathlib import Path
           from urllib.parse import urlparse, unquote
           from telethon import TelegramClient, functions, events
@@ -84,6 +100,7 @@ jobs:
           API_HASH = os.environ.get("API_HASH")
           STRING_SESSION = os.environ.get("STRING_SESSION")
           TARGET_CHAT = os.environ.get("TARGET_CHAT")
+
           CUSTOM_RTMP = os.environ.get("CUSTOM_RTMP", "").strip()
           VIDEO_URL = os.environ.get("VIDEO_URL", "").strip()
           QUALITY = os.environ.get("QUALITY", "auto").strip().lower()
@@ -91,24 +108,40 @@ jobs:
           SUBTITLE_TRACK = os.environ.get("SUBTITLE_TRACK", "auto").strip().lower()
           SUBTITLE_MODE = os.environ.get("SUBTITLE_MODE", "auto").strip().lower()
 
+          YT_COOKIES_FILE = os.environ.get("YT_COOKIES_FILE", "").strip()
+
           TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 
           current_proc = None
           rtmp = ""
           last_ts = "00:00:00"
 
+
           def run_cmd(cmd, check=True, capture=False, timeout=None):
               print("[CMD]", " ".join(map(str, cmd)))
-              return subprocess.run(
+              p = subprocess.run(
                   cmd,
-                  check=check,
+                  check=False,
                   timeout=timeout,
                   text=True,
                   capture_output=capture
               )
+              if check and p.returncode != 0:
+                  print(f"[ERR] returncode={p.returncode}")
+                  if capture:
+                      if p.stdout:
+                          print("[STDOUT]")
+                          print((p.stdout or "")[-4000:])
+                      if p.stderr:
+                          print("[STDERR]")
+                          print((p.stderr or "")[-4000:])
+                  raise subprocess.CalledProcessError(p.returncode, cmd, output=p.stdout, stderr=p.stderr)
+              return p
+
 
           def sanitize(name: str) -> str:
               return re.sub(r'[\\/:*?"<>|]+', ' ', name).strip()
+
 
           def ffmpeg_escape_filter_path(path: str) -> str:
               return (
@@ -120,6 +153,7 @@ jobs:
                   .replace(",", r"\,")
               )
 
+
           def clean_sub_text(text: str) -> str:
               text = re.sub(r'\d+\s*\n', '\n', text)
               text = re.sub(r'\d{2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{1,3}', ' ', text)
@@ -128,6 +162,7 @@ jobs:
               text = re.sub(r'[^\w\s]', ' ', text.lower())
               text = re.sub(r'\s+', ' ', text).strip()
               return text
+
 
           def score_indonesian_text(text: str) -> int:
               if not text:
@@ -145,6 +180,7 @@ jobs:
                   pass
               return 0
 
+
           def parse_fraction(fr: str) -> float:
               try:
                   fr = (fr or "").strip()
@@ -159,6 +195,7 @@ jobs:
                   return float(fr)
               except Exception:
                   return 0.0
+
 
           def snap_fps_value(fps: float) -> Fraction:
               if fps <= 0:
@@ -175,6 +212,7 @@ jobs:
                       return c
               return Fraction(fps).limit_denominator(1001)
 
+
           def choose_output_fps(fps_in: float) -> Fraction:
               if fps_in <= 0:
                   return Fraction(30, 1)
@@ -182,6 +220,7 @@ jobs:
               if float(fps_in_frac) > 30.5:
                   return Fraction(30, 1)
               return fps_in_frac
+
 
           def calc_vbv_bitrate_kbps(width: int, height: int, fps: float) -> int:
               if width <= 0 or height <= 0:
@@ -197,6 +236,7 @@ jobs:
                   return 4500 if fps > 30 else 2500
               return 1800
 
+
           def ffmpeg_help(topic: str) -> str:
               try:
                   p = subprocess.run(
@@ -209,6 +249,7 @@ jobs:
               except Exception:
                   return ""
 
+
           def detect_rtmp_options() -> set:
               help_text = ffmpeg_help("protocol=rtmp")
               opts = set()
@@ -219,7 +260,9 @@ jobs:
                   opts.add("rw_timeout")
               return opts
 
+
           RTMP_OPTS = detect_rtmp_options()
+
 
           def is_youtube_url(url: str) -> bool:
               u = url.lower()
@@ -229,6 +272,26 @@ jobs:
                   "youtu.be/",
                   "youtube.com/shorts/"
               ])
+
+
+          def normalize_youtube_url(url: str) -> str:
+              m = re.search(r'(?:v=|youtu\.be/|/live/|/shorts/)([A-Za-z0-9_-]{11})', url)
+              if m:
+                  vid = m.group(1)
+                  return f"https://www.youtube.com/watch?v={vid}"
+              return url
+
+
+          def yt_dlp_base_args():
+              args = [
+                  "yt-dlp",
+                  "--no-warnings",
+                  "--no-playlist",
+              ]
+              if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
+                  args.extend(["--cookies", YT_COOKIES_FILE])
+              return args
+
 
           def get_filename_and_url(url: str):
               final_url, filename, cookies = url, "", {}
@@ -272,6 +335,7 @@ jobs:
                   filename += ".mp4"
               return filename, final_url, cookies
 
+
           def ffprobe_json(video_input: str, custom_headers: str = "") -> dict:
               cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"]
               if custom_headers:
@@ -283,6 +347,7 @@ jobs:
               except Exception:
                   return {}
 
+
           def human_duration(seconds: float) -> str:
               if not seconds or seconds <= 0:
                   return "N/A"
@@ -291,14 +356,17 @@ jobs:
               secs = int(seconds % 60)
               return f"{hrs:02}:{mins:02}:{secs:02}"
 
+
           def pick_best_video_stream(streams):
               v_s = [s for s in streams if s.get("codec_type") == "video"]
               if not v_s:
                   return None
               return sorted(v_s, key=lambda x: x.get("height", 0), reverse=True)[0]
 
+
           def has_audio_stream(streams) -> bool:
               return any(s.get("codec_type") == "audio" for s in streams)
+
 
           def extract_subtitle_sample(video_input: str, rel_idx: int, custom_headers: str = "") -> str:
               tmp_path = f"/tmp/subsample_{rel_idx}.srt"
@@ -318,6 +386,7 @@ jobs:
                           os.remove(tmp_path)
                       except Exception:
                           pass
+
 
           def detect_indonesian_sub(streams, video_input: str, custom_headers: str = "") -> int:
               best_idx, best_score = -1, -1
@@ -339,12 +408,14 @@ jobs:
                       best_idx = i
               return best_idx if best_score > 10 else -1
 
+
           def normalize_quality_selector(quality: str) -> str:
               if quality == "1080p":
                   return "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
               if quality == "720p":
                   return "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
               return "bestvideo+bestaudio/best"
+
 
           def cleanup_temp_files():
               for p in ["/tmp/yt_live_info.json", "/tmp/yt_id.vtt", "/tmp/yt_id.srt", "/tmp/yt_stream_url.txt"]:
@@ -354,47 +425,70 @@ jobs:
                   except Exception:
                       pass
 
-          def prepare_youtube_source(url: str):
-              """
-              Return:
-              {
-                source_type: "youtube_file" | "youtube_live" | "youtube_direct",
-                video_input: "...",
-                filename: "...",
-                custom_headers: "",
-                subtitle_file: "/tmp/yt_id.srt" or "",
-                info_title: "...",
-              }
-              """
-              cleanup_temp_files()
 
-              fmt = normalize_quality_selector(QUALITY)
+          def get_youtube_meta(url: str):
+              url = normalize_youtube_url(url)
 
-              # metadata
-              meta_cmd = [
-                  "yt-dlp",
-                  "--no-warnings",
+              cmd1 = yt_dlp_base_args() + [
                   "--skip-download",
                   "--print", "%(title)s",
                   "--print", "%(is_live)s",
                   "--print", "%(was_live)s",
                   url
               ]
-              meta = run_cmd(meta_cmd, check=True, capture=True)
-              lines = [x.strip() for x in (meta.stdout or "").splitlines()]
-              title = lines[0] if len(lines) > 0 and lines[0] else "youtube_video"
-              is_live = (lines[1].lower() == "true") if len(lines) > 1 else False
-              was_live = (lines[2].lower() == "true") if len(lines) > 2 else False
+              p1 = run_cmd(cmd1, check=False, capture=True, timeout=120)
+              if p1.returncode == 0:
+                  lines = [x.strip() for x in (p1.stdout or "").splitlines()]
+                  title = lines[0] if len(lines) > 0 and lines[0] else "youtube_video"
+                  is_live = (lines[1].lower() == "true") if len(lines) > 1 else False
+                  was_live = (lines[2].lower() == "true") if len(lines) > 2 else False
+                  return {"title": title, "is_live": is_live, "was_live": was_live}
+
+              print("[WARN] metadata print gagal, coba -J")
+
+              cmd2 = yt_dlp_base_args() + [
+                  "--skip-download",
+                  "-J",
+                  url
+              ]
+              p2 = run_cmd(cmd2, check=False, capture=True, timeout=120)
+              if p2.returncode == 0:
+                  try:
+                      data = json.loads(p2.stdout or "{}")
+                      return {
+                          "title": data.get("title") or "youtube_video",
+                          "is_live": bool(data.get("is_live")),
+                          "was_live": bool(data.get("was_live")),
+                      }
+                  except Exception as e:
+                      print(f"[WARN] parse JSON metadata gagal: {e}")
+
+              print("[WARN] metadata gagal total, jalankan debug -vU")
+              debug_cmd = yt_dlp_base_args() + ["-vU", "--skip-download", url]
+              run_cmd(debug_cmd, check=False, capture=True, timeout=120)
+
+              return {
+                  "title": "youtube_video",
+                  "is_live": "/live/" in url,
+                  "was_live": False,
+              }
+
+
+          def prepare_youtube_source(url: str):
+              cleanup_temp_files()
+              url = normalize_youtube_url(url)
+              fmt = normalize_quality_selector(QUALITY)
+
+              meta = get_youtube_meta(url)
+              title = meta["title"]
+              is_live = meta["is_live"]
 
               safe_title = sanitize(title) or "youtube_video"
-
               subtitle_file = ""
 
-              # coba ambil subtitle Indonesia dari YouTube
               if USE_SUBTITLE and SUBTITLE_MODE in ("auto", "youtube"):
                   try:
-                      sub_cmd = [
-                          "yt-dlp",
+                      sub_cmd = yt_dlp_base_args() + [
                           "--skip-download",
                           "--write-auto-sub",
                           "--write-sub",
@@ -403,32 +497,38 @@ jobs:
                           "-o", "/tmp/yt_sub",
                           url
                       ]
-                      run_cmd(sub_cmd, check=False)
+                      run_cmd(sub_cmd, check=False, capture=True, timeout=180)
 
                       candidates = []
-                      for ext in ("*.srt", "*.vtt"):
-                          candidates.extend(Path("/tmp").glob(f"yt_sub*.{ext.split('.')[-1]}"))
+                      candidates.extend(Path("/tmp").glob("yt_sub*.srt"))
+                      candidates.extend(Path("/tmp").glob("yt_sub*.vtt"))
                       if candidates:
                           subtitle_file = str(sorted(candidates)[0])
                           print(f"Subtitle YouTube ditemukan: {subtitle_file}")
                   except Exception as e:
                       print(f"Gagal ambil subtitle YouTube: {e}")
 
-              # live: lebih aman pakai direct URL hasil yt-dlp, jangan download
               if is_live:
-                  get_url_cmd = [
-                      "yt-dlp",
+                  get_url_cmd = yt_dlp_base_args() + [
                       "-f", fmt,
                       "-g",
                       url
                   ]
-                  p = run_cmd(get_url_cmd, check=True, capture=True)
+                  p = run_cmd(get_url_cmd, check=False, capture=True, timeout=120)
+
+                  if p.returncode != 0 or not (p.stdout or "").strip():
+                      print("[WARN] format utama gagal, coba fallback best")
+                      get_url_cmd2 = yt_dlp_base_args() + [
+                          "-f", "best",
+                          "-g",
+                          url
+                      ]
+                      p = run_cmd(get_url_cmd2, check=True, capture=True, timeout=120)
+
                   urls = [x.strip() for x in (p.stdout or "").splitlines() if x.strip()]
                   if not urls:
                       raise RuntimeError("yt-dlp gagal mengambil direct stream URL YouTube live")
 
-                  # kalau ada video+audio terpisah, ffmpeg akan handle multi input.
-                  # tapi untuk sederhana dan stabil, kita pakai URL pertama yang paling kompatibel.
                   direct_url = urls[0]
                   return {
                       "source_type": "youtube_live",
@@ -439,16 +539,24 @@ jobs:
                       "info_title": title
                   }
 
-              # VOD / non-live: download dulu supaya stream lebih stabil
               outtmpl = f"{safe_title}.%(ext)s"
-              dl_cmd = [
-                  "yt-dlp",
+              dl_cmd = yt_dlp_base_args() + [
                   "-f", fmt,
                   "--merge-output-format", "mp4",
                   "-o", outtmpl,
                   url
               ]
-              run_cmd(dl_cmd, check=True)
+              p = run_cmd(dl_cmd, check=False, capture=True, timeout=3600)
+
+              if p.returncode != 0:
+                  print("[WARN] download format utama gagal, coba fallback best")
+                  dl_cmd2 = yt_dlp_base_args() + [
+                      "-f", "best",
+                      "--merge-output-format", "mp4",
+                      "-o", outtmpl,
+                      url
+                  ]
+                  run_cmd(dl_cmd2, check=True, capture=True, timeout=3600)
 
               produced = None
               for f in sorted(Path(".").glob(f"{safe_title}.*")):
@@ -467,6 +575,7 @@ jobs:
                   "subtitle_file": subtitle_file,
                   "info_title": title
               }
+
 
           def get_stream_data(video_input: str, custom_headers: str):
               data = ffprobe_json(video_input, custom_headers)
@@ -528,6 +637,7 @@ jobs:
 
               return info
 
+
           def build_filtergraph(video_input: str, info: dict, has_scale: bool, subtitle_file: str = ""):
               filters = []
               current = "[0:v:0]"
@@ -543,7 +653,6 @@ jobs:
                   filters.append(f"{current}scale={target_w}:-2{nxt}")
                   current = nxt
 
-              # prioritas: subtitle file eksternal dari YouTube
               if subtitle_file and os.path.exists(subtitle_file):
                   esc = ffmpeg_escape_filter_path(os.path.abspath(subtitle_file))
                   nxt = "[v2]"
@@ -568,6 +677,7 @@ jobs:
               final_label = "[vfinal]"
               filters.append(f"{current}format=yuv420p{final_label}")
               return ";".join(filters), final_label
+
 
           async def main():
               v_url = VIDEO_URL
@@ -797,6 +907,7 @@ jobs:
                   await asyncio.sleep(3)
 
               await client.disconnect()
+
 
           if __name__ == '__main__':
               asyncio.run(main())
