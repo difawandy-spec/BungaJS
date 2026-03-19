@@ -57,8 +57,8 @@ jobs:
         run: |
           if [ -n "${{ secrets.YT_COOKIES_TXT }}" ]; then
             cat > /tmp/youtube_cookies.txt <<'EOF'
-${{ secrets.YT_COOKIES_TXT }}
-EOF
+            ${{ secrets.YT_COOKIES_TXT }}
+            EOF
             echo "HAS_YT_COOKIES=true" >> $GITHUB_ENV
             echo "Cookies file written."
           else
